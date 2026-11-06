@@ -5,5 +5,5 @@ pages_build_output_dir = "./public"
 [[d1_databases]]
 binding = "DB"
 database_name = "the-recipe-book-db"
-database_id = "PREENCHER_COM_O_ID_DO_D1"
+database_id = "fd352702-de0c-4b61-b358-9aa1a2816741"
 migrations_dir = "migrations"
