@@ -203,13 +203,13 @@ function pickImg(e, done) {
   img.src = url;
 }
 
-function Home({ fav, toggle, go, covers, setCovers }) {
+function Home({ fav, toggle, go, covers, setCovers, admin, coversLoaded }) {
   const recent = [...recipes].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3);
   return h('main', { className: 'page' },
     h('section', { className: 'hero' },
       h('div', { className: 'pic' },
         h(Photo, { src: covers.hero, alt: 'Fotografia principal', cls: 'hero-photo' }),
-        MOSTRAR_TROCAR_FOTO && h('label', { className: 'chg' }, 'Trocar foto principal', h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: e => pickImg(e, src => setCovers(v => ({ ...v, hero: src }))) }))),
+        (MOSTRAR_TROCAR_FOTO && admin && coversLoaded) && h('label', { className: 'chg' }, 'Trocar foto principal', h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: e => pickImg(e, src => setCovers(v => ({ ...v, hero: src }))) }))),
       h('div', { className: 'hero-text' },
         h('p', { className: 'eyebrow' }, 'Receitas'),
         h('h1', null, 'Uma boa refeição, feita com amor.'),
@@ -219,7 +219,7 @@ function Home({ fav, toggle, go, covers, setCovers }) {
       h('div', { className: 'cat-grid' }, categories.map(c =>
         h('div', { key: c, className: 'cat-item' },
           h('button', { className: 'cat', onClick: () => go('lib', { cat: c }) }, h(Photo, { src: covers.cats && covers.cats[c], alt: c }), h('span', null, c)),
-          MOSTRAR_TROCAR_FOTO && h('label', { className: 'chg' }, 'Trocar foto', h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: e => pickImg(e, src => setCovers(v => ({ ...v, cats: { ...(v.cats || {}), [c]: src } }))) })))))),
+          (MOSTRAR_TROCAR_FOTO && admin && coversLoaded) && h('label', { className: 'chg' }, 'Trocar foto', h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: e => pickImg(e, src => setCovers(v => ({ ...v, cats: { ...(v.cats || {}), [c]: src } }))) })))))),
     h('section', { className: 'section-gap' },
       h('h2', null, 'Receitas recentes'),
       h('div', { className: 'grid' }, recent.map(r => h(Card, { key: r.id, r, fav: fav(r.id), toggle, go })))));
@@ -283,8 +283,8 @@ function Detail({ r, fav, toggle, onRemove, onEdit, admin }) {
       h('button', { onClick: () => toggle(r.id) }, fav(r.id) ? '♥ Salva' : '♡ Favoritar'),
       h('button', { onClick: share }, 'Compartilhar'),
       h('button', { onClick: () => window.print() }, 'Imprimir'),
-      admin && r.custom && h('button', { onClick: () => onEdit(r) }, 'Editar receita'),
-      admin && r.custom && h('button', { onClick: () => onRemove(r.id) }, 'Excluir receita')),
+      admin && h('button', { onClick: () => onEdit(r) }, 'Editar receita'),
+      admin && h('button', { onClick: () => onRemove(r) }, 'Excluir receita')),
     h('div', { className: 'columns' },
       h('section', { className: 'ingredients' },
         h('h2', null, 'Ingredientes'),
@@ -471,16 +471,49 @@ function App() {
   const [adminPassword, setAdminPassword] = useState('');
   const [adminError, setAdminError] = useState('');
   useEffect(() => {
-    fetch('/api/recipes').then(r => r.ok ? r.json() : []).then(data => {
-      if (Array.isArray(data)) { setCustom(data); recipes = [...seedRecipes, ...data]; }
-    }).catch(() => {});
-    fetch('/api/session').then(r => r.json()).then(d => setAdmin(!!d.admin)).catch(() => {});
+    fetch('/api/recipes', { credentials: 'same-origin', cache: 'no-store' })
+      .then(async response => { if (!response.ok) throw new Error('Não foi possível carregar as receitas salvas.'); const data = await response.json(); if (Array.isArray(data)) setCustom(data); })
+      .catch(error => console.warn(error));
+    fetch('/api/session', { credentials: 'same-origin', cache: 'no-store' })
+      .then(r => r.json()).then(d => setAdmin(!!d.admin)).catch(() => {});
   }, []);
-  recipes = [...seedRecipes, ...custom];
-  const [covers, setCovers] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('capas') || '{}'); } catch (e) { return {}; }
-  });
-  useEffect(() => { try { localStorage.setItem('capas', JSON.stringify(covers)); } catch (e) { console.warn(e); } }, [covers]);
+  const storedById = new Map(custom.map(item => [item.id, item]));
+  const seedIds = new Set(seedRecipes.map(item => item.id));
+  recipes = [
+    ...seedRecipes.filter(item => !storedById.get(item.id)?.__deleted).map(item => storedById.get(item.id) || item),
+    ...custom.filter(item => !seedIds.has(item.id) && !item.__deleted)
+  ];
+  const [covers, setCoversState] = useState({});
+  const [coversLoaded, setCoversLoaded] = useState(false);
+  useEffect(() => {
+    Promise.all([fetch('/api/settings'), fetch('/api/session')])
+      .then(async ([settingsResponse, sessionResponse]) => {
+        if (!settingsResponse.ok) throw new Error('Não foi possível carregar as fotos.');
+        const data = await settingsResponse.json();
+        const session = sessionResponse.ok ? await sessionResponse.json() : { admin: false };
+        const isAdmin = !!session.admin;
+        if (isAdmin) setAdmin(true);
+        if (data.configured) {
+          setCoversState(data.covers || {});
+        } else {
+          let legacy = {};
+          try { legacy = JSON.parse(localStorage.getItem('capas') || '{}'); } catch (e) {}
+          setCoversState(legacy);
+          if (isAdmin && Object.keys(legacy).length) {
+            const saved = await fetch('/api/settings', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ covers: legacy }) });
+            if (!saved.ok) console.warn('Não foi possível importar as fotos antigas.');
+          }
+        }
+      })
+      .catch(e => console.warn(e)).finally(() => setCoversLoaded(true));
+  }, []);
+  const setCovers = updater => {
+    const next = typeof updater === 'function' ? updater(covers) : updater;
+    setCoversState(next);
+    fetch('/api/settings', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ covers: next }) })
+      .then(r => { if (!r.ok) throw new Error('Não foi possível sincronizar as fotos. Confirme se você está conectada como administradora.'); })
+      .catch(e => alert(e.message));
+  };
   const [favs, setFavs] = useState(() => {
     try { return JSON.parse(localStorage.getItem('favoritos') || '[]'); } catch (e) { return []; }
   });
@@ -490,19 +523,24 @@ function App() {
   const go = (name, extra = {}) => { setView({ name, ...extra }); window.scrollTo(0, 0); };
   const saveRecipe = async rec => {
     try {
-      const response = await fetch('/api/recipes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec) });
-      if (!response.ok) throw new Error('Não foi possível salvar. Verifique seu acesso administrativo.');
-      const saved = await response.json();
-      setCustom(p => p.some(x => x.id === saved.id) ? p.map(x => x.id === saved.id ? saved : x) : [...p, saved]); recipes = [...seedRecipes.filter(x => x.id !== saved.id), ...custom.filter(x => x.id !== saved.id), saved]; go('recipe', { id: saved.id });
-    } catch (e) { alert(e.message); }
+      const response = await fetch('/api/recipes', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) { if (response.status === 401) setAdmin(false); throw new Error(result.error || `Não foi possível salvar a receita (erro ${response.status}).`); }
+      const saved = result;
+      setCustom(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]);
+      go('recipe', { id: saved.id });
+    } catch (error) { alert(error.message || 'Ocorreu um erro ao salvar a receita.'); }
   };
-  const removeRecipe = async id => {
-    if (!admin || !window.confirm('Tem certeza de que deseja excluir esta receita? Esta ação não pode ser desfeita.')) return;
+  const removeRecipe = async recipe => {
+    if (!admin || !recipe?.id || !window.confirm('Tem certeza de que deseja excluir esta receita? Esta ação não pode ser desfeita.')) return;
     try {
-      const response = await fetch('/api/recipes/' + encodeURIComponent(id), { method: 'DELETE' });
-      if (!response.ok) throw new Error('Não foi possível excluir a receita.');
-      setCustom(p => p.filter(x => x.id !== id)); go('lib');
-    } catch (e) { alert(e.message); }
+      const response = await fetch('/api/recipes/' + encodeURIComponent(recipe.id), { method: 'DELETE', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ isBuiltin: seedIds.has(recipe.id) }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) { if (response.status === 401) setAdmin(false); throw new Error(result.error || `Não foi possível excluir a receita (erro ${response.status}).`); }
+      if (seedIds.has(recipe.id)) setCustom(previous => [...previous.filter(item => item.id !== recipe.id), { id: recipe.id, __deleted: true }]);
+      else setCustom(previous => previous.filter(item => item.id !== recipe.id));
+      go('lib');
+    } catch (error) { alert(error.message || 'Ocorreu um erro ao excluir a receita.'); }
   };
   const editRecipe = rec => go('editar', { id: rec.id });
   const link = (label, name) => h('a', {
@@ -510,20 +548,24 @@ function App() {
     onClick: e => { e.preventDefault(); go(name); }
   }, label);
 
-  const props = { fav, toggle, go, covers, setCovers }; 
+  const props = { fav, toggle, go, covers, setCovers, admin, coversLoaded }; 
   const loginAdmin = async () => {
     setAdminError('');
     try {
-      const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: adminPassword }) });
-      if (!r.ok) throw new Error('Senha incorreta.');
-      setAdmin(true); setAdminPassword(''); go('lib');
+      const r = await fetch('/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: adminPassword }) });
+      const result = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(result.error === 'Admin secrets are not configured.' ? 'A senha administrativa não está configurada no Cloudflare.' : (result.error || 'Senha incorreta.'));
+      const session = await fetch('/api/session', { credentials: 'same-origin', cache: 'no-store' });
+      const sessionData = await session.json().catch(() => ({}));
+      if (!session.ok || !sessionData.admin) throw new Error('O login foi aceito, mas a sessão não foi reconhecida. Confira as configurações de autenticação no Cloudflare.');
+      setAdmin(true); setAdminPassword(''); go('admin');
     } catch (e) { setAdminError(e.message); }
   };
   const logoutAdmin = async () => { await fetch('/api/logout', { method: 'POST' }); setAdmin(false); go('home'); };
 
   let body;
   if (view.name === 'admin') body = admin
-    ? h('main', { className: 'page' }, h('h1', null, 'Administração'), h('p', null, 'Você está autenticada. Cadastre e gerencie suas receitas.'), h('button', { className: 'primary', onClick: () => go('nova') }, 'Cadastrar receita'), h('h2', null, 'Suas receitas'), custom.length ? h('div', { className: 'grid' }, custom.map(r => h('article', { key: r.id, className: 'card' }, h('button', { className: 'card-open', onClick: () => go('recipe', { id: r.id }) }, h(Photo, { src: r.image, alt: r.name }), h('h3', null, r.name)), h('div', { className: 'actions' }, h('button', { onClick: () => go('editar', { id: r.id }) }, 'Editar'), h('button', { onClick: () => removeRecipe(r.id) }, 'Excluir'))))) : h('p', { className: 'muted' }, 'Nenhuma receita cadastrada ainda.'), h('button', { onClick: logoutAdmin }, 'Sair'))
+    ? h('main', { className: 'page' }, h('h1', null, 'Administração'), h('p', null, 'Você está autenticada. Cadastre e gerencie suas receitas.'), h('button', { className: 'primary', onClick: () => go('nova') }, 'Cadastrar receita'), h('h2', null, 'Todas as receitas'), recipes.length ? h('div', { className: 'grid' }, recipes.map(r => h('article', { key: r.id, className: 'card' }, h('button', { className: 'card-open', onClick: () => go('recipe', { id: r.id }) }, h(Photo, { src: r.image, alt: r.name }), h('h3', null, r.name)), h('div', { className: 'actions' }, h('button', { onClick: () => go('editar', { id: r.id }) }, 'Editar'), h('button', { onClick: () => removeRecipe(r) }, 'Excluir'))))) : h('p', { className: 'muted' }, 'Nenhuma receita cadastrada ainda.'), h('button', { onClick: logoutAdmin }, 'Sair'))
     : h('main', { className: 'page' }, h('h1', null, 'Acesso administrativo'), h('p', null, 'Área restrita.'), h('input', { type: 'password', value: adminPassword, placeholder: 'Senha administrativa', onChange: e => setAdminPassword(e.target.value) }), h('button', { className: 'primary', onClick: loginAdmin }, 'Entrar'), adminError && h('p', { className: 'err' }, adminError));
   else if (view.name === 'home') body = h(Home, props);
   else if (view.name === 'lib') body = h(Lib, { ...props, initCat: view.cat });
@@ -531,7 +573,7 @@ function App() {
   else if (view.name === 'cats') body = h(Categories, { go });
   else if (view.name === 'nova') body = admin ? h(Form, { onSave: saveRecipe, onCancel: () => go('admin') }) : h('main', { className: 'page' }, 'Acesso restrito.');
   else if (view.name === 'editar') {
-    const rec = custom.find(x => x.id === view.id);
+    const rec = recipes.find(x => x.id === view.id);
     body = admin && rec ? h(Form, { key: rec.id, initial: rec, onSave: saveRecipe, onCancel: () => go('admin') }) : h('main', { className: 'page' }, 'Receita não encontrada ou acesso restrito.');
   }
   else if (view.name === 'recipe') {
