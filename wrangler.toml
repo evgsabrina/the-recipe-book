@@ -1,0 +1,9 @@
+name = "the-recipe-book"
+compatibility_date = "2026-11-06"
+pages_build_output_dir = "./public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "the-recipe-book-db"
+database_id = "PREENCHER_COM_O_ID_DO_D1"
+migrations_dir = "migrations"
