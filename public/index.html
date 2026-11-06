@@ -262,7 +262,7 @@ function Lib({ fav, toggle, go, favOnly, initCat }) {
       : h('p', { className: 'muted' }, favOnly ? 'Você ainda não salvou favoritos.' : 'Nenhuma receita encontrada.'));
 }
 
-function Detail({ r, fav, toggle, onRemove }) {
+function Detail({ r, fav, toggle, onRemove, onEdit, admin }) {
   const [sv, setSv] = useState(r.yield);
   const [got, setGot] = useState({});
   const [done, setDone] = useState({});
@@ -283,7 +283,8 @@ function Detail({ r, fav, toggle, onRemove }) {
       h('button', { onClick: () => toggle(r.id) }, fav(r.id) ? '♥ Salva' : '♡ Favoritar'),
       h('button', { onClick: share }, 'Compartilhar'),
       h('button', { onClick: () => window.print() }, 'Imprimir'),
-      r.custom && h('button', { onClick: () => onRemove(r.id) }, 'Remover')),
+      admin && r.custom && h('button', { onClick: () => onEdit(r) }, 'Editar receita'),
+      admin && r.custom && h('button', { onClick: () => onRemove(r.id) }, 'Excluir receita')),
     h('div', { className: 'columns' },
       h('section', { className: 'ingredients' },
         h('h2', null, 'Ingredientes'),
@@ -292,11 +293,13 @@ function Detail({ r, fav, toggle, onRemove }) {
           h('button', { onClick: () => setSv(s => Math.max(1, s - 1)), 'aria-label': 'Diminuir porções' }, '−'),
           h('span', null, sv),
           h('button', { onClick: () => setSv(s => s + 1), 'aria-label': 'Aumentar porções' }, '+')),
-        h('ul', null, r.ingredients.map(([q, u, n], i) =>
-          h('li', { key: i },
+        h('ul', null, r.ingredients.map((item, i) => {
+          const [q, u, n] = Array.isArray(item) ? item : [item.qty, item.unit, item.name];
+          return h('li', { key: i },
             h('label', { className: got[i] ? 'checked' : '' },
               h('input', { type: 'checkbox', checked: !!got[i], onChange: () => setGot(g => ({ ...g, [i]: !g[i] })) }),
-              h('span', null, h('strong', null, qty(q) + ' ' + u), ' ' + n))))),
+              h('span', null, h('strong', null, qty(q) + ' ' + u), ' ' + n)));
+        })),
         h('aside', { className: 'inspiration' },
           h('h3', null, 'Inspiração original'),
           r.inspiration && r.inspiration.url
@@ -304,17 +307,18 @@ function Detail({ r, fav, toggle, onRemove }) {
             : h('p', { className: 'muted' }, 'A inspiração desta receita ainda não foi informada.'))),
       h('section', { className: 'steps' },
         h('h2', null, 'Modo de preparo'),
-        h('ol', null, r.steps.map(([t, x], i) =>
-          h('li', { key: i, className: done[i] ? 'done' : '' },
+        h('ol', null, r.steps.map((step, i) => {
+          const [t, x] = Array.isArray(step) ? step : [step.title, step.text];
+          return h('li', { key: i, className: done[i] ? 'done' : '' },
             h('span', { className: 'num' }, i + 1),
             h('div', null,
               h('h3', null, t),
               h('p', null, x),
               h('label', { className: 'muted' },
-                h('input', { type: 'checkbox', checked: !!done[i], onChange: () => setDone(d => ({ ...d, [i]: !d[i] })) }), ' Concluída'))))),
-        )),
+                h('input', { type: 'checkbox', checked: !!done[i], onChange: () => setDone(d => ({ ...d, [i]: !d[i] })) }), ' Concluída')));
+        })),
         h(Gallery, { m: r.media })
-      )
+      )))
 }
 
 function embedUrl(u) {
@@ -358,9 +362,15 @@ function Gallery({ m }) {
       items.map((_, i) => h('button', { key: i, className: 'dot' + (i === idx ? ' on' : ''), onClick: () => go(i), 'aria-label': 'Ir para o item ' + (i + 1) }))));
 }
 
-function Form({ onSave, onCancel }) {
+function Form({ onSave, onCancel, initial }) {
   const blank = { name: '', description: '', category: '', image: '', prepTime: '', cookTime: '', yield: '', difficulty: 'Fácil', ingredients: [{ qty: '', unit: '', name: '' }], steps: [{ title: '', text: '' }], tips: '', siteName: '', recipeName: '', url: '', gal1: '', video: '', gal2: '', vup: '' };
-  const [f, setF] = useState(blank);
+  const [f, setF] = useState(() => {
+    if (!initial) return blank;
+    const media = initial.media || {};
+    const ingredients = (initial.ingredients || []).map(i => Array.isArray(i) ? ({ qty: String(i[0] ?? ''), unit: i[1] || '', name: i[2] || '' }) : ({ qty: String(i.qty ?? ''), unit: i.unit || '', name: i.name || '' }));
+    const steps = (initial.steps || []).map(step => Array.isArray(step) ? ({ title: step[0] || '', text: step[1] || '' }) : ({ title: step.title || '', text: step.text || '' }));
+    return { ...blank, ...initial, ingredients: ingredients.length ? ingredients : blank.ingredients, steps: steps.length ? steps : blank.steps, tips: Array.isArray(initial.tips) ? initial.tips.join('\n') : (initial.tips || ''), siteName: initial.inspiration?.site || '', recipeName: initial.inspiration?.recipeName || '', url: initial.inspiration?.url || '', gal1: media.gal1 || '', video: media.video || '', gal2: media.gal2 || '', vup: media.videoUrl || '' };
+  });
   const [err, setErr] = useState('');
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const setRow = (list, i, k, v) => set(list, f[list].map((row, j) => (j === i ? { ...row, [k]: v } : row)));
@@ -397,11 +407,11 @@ function Form({ onSave, onCancel }) {
     if (!steps.length) return setErr('Adicione pelo menos uma etapa.');
     setErr('');
     onSave({
-      id: 'r-' + Date.now().toString(36), custom: true,
+      id: initial?.id || ('r-' + Date.now().toString(36)), custom: true,
       name: f.name.trim(), description: f.description.trim(), category: f.category,
       image: f.image || undefined,
       prepTime: num(f.prepTime), cookTime: num(f.cookTime), yield: Math.max(1, num(f.yield) || 1),
-      difficulty: f.difficulty, createdAt: new Date().toISOString().slice(0, 10),
+      difficulty: f.difficulty, createdAt: initial?.createdAt || new Date().toISOString().slice(0, 10),
       ingredients: ings, steps,
       tips: f.tips.split('\n').map(t => t.trim()).filter(Boolean),
       media: { gal1: f.gal1, video: f.video.trim(), videoUrl: f.vup, gal2: f.gal2 },
@@ -411,7 +421,7 @@ function Form({ onSave, onCancel }) {
   const input = (label, k, extra = {}) => h('label', { className: 'fld' },
     h('span', null, label), h('input', { value: f[k], onChange: e => set(k, e.target.value), ...extra }));
   return h('main', { className: 'page' },
-    h('h1', null, 'Nova receita'),
+    h('h1', null, initial ? 'Editar receita' : 'Nova receita'),
     h('div', { className: 'form' },
       input('Nome', 'name', { placeholder: 'Ex.: Bolo de cenoura' }),
       input('Descrição curta', 'description'),
@@ -450,7 +460,7 @@ function Form({ onSave, onCancel }) {
       h('label', { className: 'fld' }, h('span', null, 'Foto 2' + (f.gal2 ? ' ✓' : '')), h('input', { type: 'file', accept: 'image/*', onChange: e => pickImg(e, src => set('gal2', src)) })),
       err && h('p', { className: 'err full' }, err),
       h('div', { className: 'actions full' },
-        h('button', { className: 'primary', onClick: save }, 'Salvar receita'),
+        h('button', { className: 'primary', onClick: save }, initial ? 'Salvar alterações' : 'Salvar receita'),
         h('button', { onClick: onCancel }, 'Cancelar'))));
 }
 
@@ -483,16 +493,18 @@ function App() {
       const response = await fetch('/api/recipes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec) });
       if (!response.ok) throw new Error('Não foi possível salvar. Verifique seu acesso administrativo.');
       const saved = await response.json();
-      setCustom(p => [...p, saved]); recipes = [...seedRecipes, ...custom, saved]; go('recipe', { id: saved.id });
+      setCustom(p => p.some(x => x.id === saved.id) ? p.map(x => x.id === saved.id ? saved : x) : [...p, saved]); recipes = [...seedRecipes.filter(x => x.id !== saved.id), ...custom.filter(x => x.id !== saved.id), saved]; go('recipe', { id: saved.id });
     } catch (e) { alert(e.message); }
   };
   const removeRecipe = async id => {
+    if (!admin || !window.confirm('Tem certeza de que deseja excluir esta receita? Esta ação não pode ser desfeita.')) return;
     try {
       const response = await fetch('/api/recipes/' + encodeURIComponent(id), { method: 'DELETE' });
       if (!response.ok) throw new Error('Não foi possível excluir a receita.');
       setCustom(p => p.filter(x => x.id !== id)); go('lib');
     } catch (e) { alert(e.message); }
   };
+  const editRecipe = rec => go('editar', { id: rec.id });
   const link = (label, name) => h('a', {
     href: '#', className: view.name === name ? 'active' : '',
     onClick: e => { e.preventDefault(); go(name); }
@@ -511,16 +523,20 @@ function App() {
 
   let body;
   if (view.name === 'admin') body = admin
-    ? h('main', { className: 'page' }, h('h1', null, 'Administração'), h('p', null, 'Você está autenticada. Cadastre e gerencie receitas pelo painel.'), h('button', { className: 'primary', onClick: () => go('nova') }, 'Cadastrar receita'), h('button', { onClick: logoutAdmin }, 'Sair'))
+    ? h('main', { className: 'page' }, h('h1', null, 'Administração'), h('p', null, 'Você está autenticada. Cadastre e gerencie suas receitas.'), h('button', { className: 'primary', onClick: () => go('nova') }, 'Cadastrar receita'), h('h2', null, 'Suas receitas'), custom.length ? h('div', { className: 'grid' }, custom.map(r => h('article', { key: r.id, className: 'card' }, h('button', { className: 'card-open', onClick: () => go('recipe', { id: r.id }) }, h(Photo, { src: r.image, alt: r.name }), h('h3', null, r.name)), h('div', { className: 'actions' }, h('button', { onClick: () => go('editar', { id: r.id }) }, 'Editar'), h('button', { onClick: () => removeRecipe(r.id) }, 'Excluir'))))) : h('p', { className: 'muted' }, 'Nenhuma receita cadastrada ainda.'), h('button', { onClick: logoutAdmin }, 'Sair'))
     : h('main', { className: 'page' }, h('h1', null, 'Acesso administrativo'), h('p', null, 'Área restrita.'), h('input', { type: 'password', value: adminPassword, placeholder: 'Senha administrativa', onChange: e => setAdminPassword(e.target.value) }), h('button', { className: 'primary', onClick: loginAdmin }, 'Entrar'), adminError && h('p', { className: 'err' }, adminError));
   else if (view.name === 'home') body = h(Home, props);
   else if (view.name === 'lib') body = h(Lib, { ...props, initCat: view.cat });
   else if (view.name === 'favs') body = h(Lib, { ...props, favOnly: true });
   else if (view.name === 'cats') body = h(Categories, { go });
-  else if (view.name === 'nova') body = h(Form, { onSave: saveRecipe, onCancel: () => go('lib') });
+  else if (view.name === 'nova') body = admin ? h(Form, { onSave: saveRecipe, onCancel: () => go('admin') }) : h('main', { className: 'page' }, 'Acesso restrito.');
+  else if (view.name === 'editar') {
+    const rec = custom.find(x => x.id === view.id);
+    body = admin && rec ? h(Form, { key: rec.id, initial: rec, onSave: saveRecipe, onCancel: () => go('admin') }) : h('main', { className: 'page' }, 'Receita não encontrada ou acesso restrito.');
+  }
   else if (view.name === 'recipe') {
     const r = recipes.find(x => x.id === view.id);
-    body = r ? h(Detail, { key: r.id, r, fav, toggle, onRemove: removeRecipe }) : h('main', { className: 'page' }, h('p', null, 'Receita não encontrada.'));
+    body = r ? h(Detail, { key: r.id, r, fav, toggle, admin, onEdit: editRecipe, onRemove: removeRecipe }) : h('main', { className: 'page' }, h('p', null, 'Receita não encontrada.'));
   }
 
   return h(React.Fragment, null,
