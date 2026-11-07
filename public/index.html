@@ -465,7 +465,8 @@ function Form({ onSave, onCancel, initial }) {
 }
 
 function App() {
-  const [view, setView] = useState({ name: window.location.pathname === '/admin' ? 'admin' : 'home' });
+  const isAdminPath = window.location.pathname === '/admin';
+  const [view, setView] = useState({ name: isAdminPath ? 'admin' : 'home' });
   const [custom, setCustom] = useState([]);
   const [admin, setAdmin] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
@@ -474,8 +475,11 @@ function App() {
     fetch('/api/recipes', { credentials: 'same-origin', cache: 'no-store' })
       .then(async response => { if (!response.ok) throw new Error('Não foi possível carregar as receitas salvas.'); const data = await response.json(); if (Array.isArray(data)) setCustom(data); })
       .catch(error => console.warn(error));
-    fetch('/api/session', { credentials: 'same-origin', cache: 'no-store' })
-      .then(r => r.json()).then(d => setAdmin(!!d.admin)).catch(() => {});
+    // A sessão salva no navegador não deve ativar os controles administrativos na página pública.
+    if (isAdminPath) {
+      fetch('/api/session', { credentials: 'same-origin', cache: 'no-store' })
+        .then(r => r.json()).then(d => setAdmin(!!d.admin)).catch(() => {});
+    }
   }, []);
   const storedById = new Map(custom.map(item => [item.id, item.category === 'Bolos e tortas' ? { ...item, category: 'Bolos e Recheios' } : item]));
   const seedIds = new Set(seedRecipes.map(item => item.id));
@@ -492,7 +496,7 @@ function App() {
         const data = await settingsResponse.json();
         const session = sessionResponse.ok ? await sessionResponse.json() : { admin: false };
         const isAdmin = !!session.admin;
-        if (isAdmin) setAdmin(true);
+        if (isAdmin && isAdminPath) setAdmin(true);
         if (data.configured) {
           setCoversState(data.covers || {});
         } else {
@@ -525,7 +529,11 @@ function App() {
   useEffect(() => { try { localStorage.setItem('favoritos', JSON.stringify(favs)); } catch (e) {} }, [favs]);
   const toggle = id => setFavs(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
   const fav = id => favs.includes(id);
-  const go = (name, extra = {}) => { setView({ name, ...extra }); window.scrollTo(0, 0); };
+  const go = (name, extra = {}) => {
+    if (name === 'home') setAdmin(false);
+    setView({ name, ...extra });
+    window.scrollTo(0, 0);
+  };
   const saveRecipe = async rec => {
     try {
       const response = await fetch('/api/recipes', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec) });
