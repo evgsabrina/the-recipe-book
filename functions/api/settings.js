@@ -17,7 +17,7 @@ export async function onRequestPut({ request, env }) {
     return json({ error: "Invalid covers data" }, 400);
   }
   const value = JSON.stringify(body.covers);
-  if (value.length > 1_400_000) return json({ error: "As imagens estão muito grandes. Escolha imagens menores." }, 413);
+  if (value.length > 1_850_000) return json({ error: "As imagens ainda estão muito grandes para o banco de dados. Reduza o tamanho das fotos e tente novamente." }, 413);
   await env.DB.prepare("INSERT INTO site_settings (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
     .bind("covers", value).run();
   return json({ success: true }, 200, { "Cache-Control": "no-store" });
