@@ -184,47 +184,80 @@ function Card({ r, fav, toggle, go }) {
 
 const MOSTRAR_TROCAR_FOTO = true; // true = mostra os botões "Trocar foto" na página inicial
 
+function compactJpegFromImage(img, maxSide = 640, maxBytes = 40 * 1024) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Não foi possível preparar a imagem.');
+
+  let scale = Math.min(1, maxSide / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+  let quality = 0.72;
+  let data = '';
+
+  // Primeiro reduz a qualidade; depois reduz as dimensões se necessário.
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const width = Math.max(1, Math.round((img.naturalWidth || img.width) * scale));
+    const height = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+    canvas.width = width;
+    canvas.height = height;
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    data = canvas.toDataURL('image/jpeg', quality);
+
+    const base64 = data.split(',')[1] || '';
+    const bytes = Math.floor(base64.length * 3 / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+    if (bytes <= maxBytes && Math.max(width, height) <= maxSide) return data;
+
+    if (quality > 0.40) quality = Math.max(0.40, quality - 0.08);
+    else {
+      scale *= 0.85;
+      quality = 0.64;
+    }
+  }
+  throw new Error('Não foi possível reduzir esta foto para menos de 40 KB. Escolha outra imagem.');
+}
+
+function compactDataImage(src) {
+  if (typeof src !== 'string' || !/^data:image\//i.test(src)) return Promise.resolve(src);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try { resolve(compactJpegFromImage(img)); }
+      catch (error) { reject(error); }
+    };
+    img.onerror = () => reject(new Error('Não foi possível processar uma das fotos já salvas.'));
+    img.src = src;
+  });
+}
+
+async function compactAllCovers(source) {
+  const result = { ...(source || {}) };
+  if (result.hero) result.hero = await compactDataImage(result.hero);
+  if (result.cats && typeof result.cats === 'object') {
+    const cats = {};
+    for (const [name, image] of Object.entries(result.cats)) {
+      cats[name] = image ? await compactDataImage(image) : image;
+    }
+    result.cats = cats;
+  }
+  return result;
+}
+
 function pickImg(e, done) {
   const file = e.target.files && e.target.files[0];
   e.target.value = '';
   if (!file) return;
+  if (!/^image\//i.test(file.type)) {
+    alert('Escolha um arquivo de imagem.');
+    return;
+  }
 
   const url = URL.createObjectURL(file);
   const img = new Image();
 
   img.onload = () => {
     try {
-      // Fotos de capa/categoria são comprimidas antes de serem enviadas ao D1.
-      // O limite por imagem evita que várias capas ultrapassem o tamanho da configuração.
-      const maxSide = 700;
-      const maxDataUrlLength = 120000; // aproximadamente 90 KB
-      let scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-      let quality = 0.48;
-      let data = '';
-
-      const c = document.createElement('canvas');
-      const ctx = c.getContext('2d');
-      if (!ctx) throw new Error('Não foi possível preparar a imagem.');
-
-      for (let attempt = 0; attempt < 6; attempt++) {
-        c.width = Math.max(1, Math.round(img.width * scale));
-        c.height = Math.max(1, Math.round(img.height * scale));
-        ctx.clearRect(0, 0, c.width, c.height);
-        ctx.drawImage(img, 0, 0, c.width, c.height);
-        data = c.toDataURL('image/jpeg', quality);
-
-        if (data.length <= maxDataUrlLength) break;
-
-        // Reduz gradualmente as dimensões e, se necessário, a qualidade.
-        scale *= 0.82;
-        quality = Math.max(0.36, quality - 0.025);
-      }
-
+      const data = compactJpegFromImage(img, 640, 40 * 1024);
       URL.revokeObjectURL(url);
-      if (data.length > maxDataUrlLength) {
-        alert('Esta foto ainda ficou muito grande. Escolha uma imagem menor.');
-        return;
-      }
       done(data);
     } catch (error) {
       URL.revokeObjectURL(url);
@@ -547,17 +580,27 @@ function App() {
       })
       .catch(e => console.warn(e)).finally(() => setCoversLoaded(true));
   }, []);
-  const setCovers = updater => {
+  const setCovers = async updater => {
     const next = typeof updater === 'function' ? updater(covers) : updater;
+    // Mantém a prévia imediata, mas normaliza TODAS as capas antigas e novas
+    // antes de enviar o conjunto completo ao banco de dados.
     setCoversState(next);
-    fetch('/api/settings', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ covers: next }) })
-      .then(async r => {
-        if (!r.ok) {
-          const data = await r.json().catch(() => ({}));
-          throw new Error(data.error || `Não foi possível sincronizar as fotos (erro ${r.status}).`);
-        }
-      })
-      .catch(e => alert(e.message));
+    try {
+      const compact = await compactAllCovers(next);
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ covers: compact })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || `Não foi possível sincronizar as fotos (erro ${response.status}).`);
+      }
+      setCoversState(compact);
+    } catch (error) {
+      alert(error.message || 'Não foi possível salvar as fotos. Tente novamente.');
+    }
   };
   const [favs, setFavs] = useState(() => {
     try { return JSON.parse(localStorage.getItem('favoritos') || '[]'); } catch (e) { return []; }
